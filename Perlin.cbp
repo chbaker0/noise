@@ -25,11 +25,11 @@
 				</Compiler>
 				<Linker>
 					<Add option="-s" />
+					<Add library="sfml-graphics" />
+					<Add library="sfml-window" />
+					<Add library="sfml-system" />
 				</Linker>
 			</Target>
-			<Environment>
-				<Variable name="LIBPNG_PREFIX" value="D:\Development\Libraries\libpng-1.6.17" />
-			</Environment>
 		</Build>
 		<Compiler>
 			<Add option="-Wall" />
