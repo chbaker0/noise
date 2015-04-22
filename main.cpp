@@ -13,6 +13,9 @@
 
 #include <png.h>
 
+#include <SFML/Window.hpp>
+#include <SFML/Graphics.hpp>
+
 class RandomVectorGenerator
 {
 private:
@@ -217,40 +220,18 @@ int main()
 {
     using namespace std;
 
+    sf::RenderWindow win(sf::VideoMode(512, 512), "Perlin");
+
     ofstream logger("log.txt");
-    FILE *image = fopen("test.png", "wb");
-    if(!image)
-        return 1;
-
-    png_structp png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING,
-                                                  nullptr, nullptr, nullptr);
-    if(!png_ptr)
-        return 1;
-
-    png_infop info_ptr = png_create_info_struct(png_ptr);
-    if(!info_ptr)
-    {
-        png_destroy_write_struct(&png_ptr, nullptr);
-        return 1;
-    }
-
-    if(setjmp(png_jmpbuf(png_ptr)))
-    {
-        png_destroy_write_struct(&png_ptr, nullptr);
-        return 1;
-    }
-
-    png_init_io(png_ptr, image);
-    png_set_IHDR(png_ptr, info_ptr, 4096, 4096, 8, PNG_COLOR_TYPE_GRAY, PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
 
     RandomVectorGenerator vecGen;
 
-    Grid3D<glm::dvec3> test(64, 64, 64);
-    for(unsigned int z = 0; z < 64; ++z)
+    Grid3D<glm::dvec3> test(32, 32, 32);
+    for(unsigned int z = 0; z < 32; ++z)
     {
-        for(unsigned int y = 0; y < 64; ++y)
+        for(unsigned int y = 0; y < 32; ++y)
         {
-            for(unsigned int x = 0; x < 64; ++x)
+            for(unsigned int x = 0; x < 32; ++x)
             {
                 test.index(x, y, z) = vecGen();
                 logger << x << ' ' << y << ' ' << z << ": " << test.index(x, y, z) << endl;
@@ -259,31 +240,30 @@ int main()
     }
 
     Perlin3D<Grid3D<glm::dvec3>> perlin(test);
-    vector<unsigned char> imageRows(4096 * 4096);
-    vector<unsigned char*> imageRowPtrs(4096);
-    for(unsigned int i = 0; i < 4096; ++i)
-    {
-        imageRowPtrs[i] = &(imageRows[i*4096]);
-    }
-    double largest = 0;
-    double smallest = 1000;
-    for(unsigned int y = 0; y < 4096; ++y)
-    {
-        for(unsigned int x = 0; x < 4096; ++x)
-        {
-            glm::dvec3 point(((double) x / 4096.d) * 64.0d, ((double) y / 4096.d) * 64.0d, 1.1d);
-            double sample = 135.0d * abs(perlin.sample(point) + 0.5);
-            imageRows[y * 4096 + x] = sample;
-            largest = sample > largest ? sample : largest;
-            smallest = sample < smallest ? sample : smallest;
-        }
-    }
-    png_set_rows(png_ptr, info_ptr, &(imageRowPtrs[0]));
-    png_write_png(png_ptr, info_ptr, 0, nullptr);
-    png_write_end(png_ptr, info_ptr);
-    png_destroy_write_struct(&png_ptr, &info_ptr);
 
-    cout << largest << ' ' << smallest << endl;
+    win.setFramerateLimit(60);
+    while(win.isOpen())
+    {
+        sf::Event e;
+        while(win.pollEvent(e))
+        {
+            if(e.type == sf::Event::Closed)
+                win.close();
+        }
+
+        for(unsigned int y = 0; y < 512; ++y)
+        {
+            for(unsigned int x = 0; x < 512; ++x)
+            {
+                glm::dvec3 point(((double) x / 512.d) * 32.0d, ((double) y / 512.d) * 32.0d, 1.1d);
+                double sample = 220.0d * abs(perlin.sample(point) + 0.5);
+
+                largest = sample > largest ? sample : largest;
+                smallest = sample < smallest ? sample : smallest;
+            }
+        }
+
+    }
 
 //    FILE *dump = fopen("C:\\Development\\dump.txt", "w");
 //    char *fileBuffer = new char[67108864];
