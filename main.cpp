@@ -4,17 +4,21 @@
 #include <algorithm>
 #include <random>
 #include <utility>
+#include <limits>
+#include <map>
+#include <tuple>
 
 #include <cstdio>
 #include <cmath>
 
 #include <glm/glm.hpp>
 #include <glm/gtx/io.hpp>
-
-#include <png.h>
+#include <glm/gtx/color_space.hpp>
 
 #include <SFML/Window.hpp>
 #include <SFML/Graphics.hpp>
+
+#include <xxhash.h>
 
 class RandomVectorGenerator
 {
@@ -148,8 +152,93 @@ class Perlin3D
 private:
     const Grid& grid;
 
+    void distanceTransform(glm::dvec3& originDistance) const
+    {
+        for(unsigned int i = 0; i < 3; ++i)
+        {
+            originDistance[i] = 3.0 * originDistance[i] * originDistance[i] -
+                                2.0 * originDistance[i] * originDistance[i] * originDistance[i];
+//            originDistance[i] = glm::cos(pi * originDistance[i]) / -2 + 0.5d;
+        }
+    }
+
 public:
     Perlin3D(const Grid& grid_in): grid(grid_in) {}
+
+    void getSamples(const glm::dvec3& start, const glm::dvec3& end, const glm::u64vec3& counts, double *buffer)
+    {
+        glm::u64vec3 currentSampleNum(0, 0, 0);
+        glm::u64vec3 currentCube(0, 0, 0);
+
+        glm::dvec3 sampleOffset;
+        for(unsigned int i = 0; i < 2; ++i)
+        {
+            sampleOffset[i] = (start[i] - end[i]) / (double) counts[i];
+        }
+
+        glm::dvec3 grads[8];
+
+        auto getGrads =
+        [&grads, &currentCube, this]() -> void
+        {
+            for(unsigned int z = 0; z < 2; ++z)
+                for(unsigned int y = 0; y < 2; ++y)
+                    for(unsigned int x = 0; x < 2; ++x)
+                        grads[4 * z + 2 * y + x] = grid.index(x, y, z);
+        };
+
+        getGrads();
+
+        auto sample =
+        [&grads, this](const glm::dvec3& point, std::size_t x, std::size_t y, std::size_t z) -> double
+        {
+            const glm::dvec3& grad = grads[4 * z + 2 * y + x];
+            glm::dvec3 dist = point - glm::dvec3(x, y, z);
+            return glm::dot(dist, grad);
+        };
+
+        do
+        {
+            glm::dvec3 samplePos;
+            for(unsigned int i = 0; i < 2; ++i)
+                samplePos[i] = start[i] + (double) currentSampleNum[i] * sampleOffset[i];
+
+            glm::dvec3 originDistance(samplePos.x - currentCube[0],
+                                      samplePos.y - currentCube[1],
+                                      samplePos.z - currentCube[2]);
+            distanceTransform(originDistance);
+
+            glm::u64vec3 nextCube(samplePos.x, samplePos.y, samplePos.z);
+
+            if(nextCube != currentCube)
+            {
+                currentCube = nextCube;
+                getGrads();
+            }
+
+            double xAverage1 = sample(samplePos, 0, 0, 0) * (1.0 - originDistance.x) +
+                               sample(samplePos, 1, 0, 0) * originDistance.x;
+            double xAverage2 = sample(samplePos, 0, 1, 0) * (1.0 - originDistance.x) +
+                               sample(samplePos, 1, 1, 0) * originDistance.x;
+            double xAverage3 = sample(samplePos, 0, 0, 1) * (1.0 - originDistance.x) +
+                               sample(samplePos, 1, 0, 1) * originDistance.x;
+            double xAverage4 = sample(samplePos, 0, 1, 1) * (1.0 - originDistance.x) +
+                               sample(samplePos, 1, 1, 1) * originDistance.x;
+
+            double yAverage1 = xAverage1 * (1.0 - originDistance.y) +
+                               xAverage2 * originDistance.y;
+            double yAverage2 = xAverage3 * (1.0 - originDistance.y) +
+                               xAverage4 * originDistance.y;
+
+            *buffer = yAverage1 * (1.0 - originDistance.z) + yAverage2 * originDistance.z;
+
+            currentSampleNum.x++;
+            if(currentSampleNum.x >= counts.x)
+                currentSampleNum.x = 0, currentSampleNum.y++;
+            if(currentSampleNum.y >= counts.y)
+                currentSampleNum.y = 0, currentSampleNum.z++;
+        } while(currentSampleNum.z < counts.z);
+    }
 
     double sample(const glm::dvec3& point) const
     {
@@ -169,6 +258,7 @@ public:
         glm::dvec3 originDistance(point.x - cubeOrigin[0],
                                   point.y - cubeOrigin[1],
                                   point.z - cubeOrigin[2]);
+        distanceTransform(originDistance);
 
         double xAverage1 = sample(0, 0, 0) * (1.0 - originDistance.x) +
                            sample(1, 0, 0) * originDistance.x;
@@ -185,34 +275,45 @@ public:
                            xAverage4 * originDistance.y;
 
         return yAverage1 * (1.0 - originDistance.z) + yAverage2 * originDistance.z;
+    }
+};
 
-//        double result = 0;
-//        glm::dvec3 tempDistance;
-//        for(std::size_t z = cubeOrigin[2]; z < cubeOrigin[2] + 2; ++z)
-//        {
-//            tempDistance.z = (double) z - point.z;
-//            double yAverage = 0;
-//            for(std::size_t y = cubeOrigin[1]; y < cubeOrigin[1] + 2; ++y)
-//            {
-//                tempDistance.y = (double) y - point.y;
-//                double xAverage = 0;
-//                for(std::size_t x = cubeOrigin[0]; x < cubeOrigin[0] + 2; ++x)
-//                {
-//                    tempDistance.x = (double) x - point.x;
-//
-//                    double dot = glm::dot(grid.index(x, y, z), tempDistance);
-//                    // Take weighted average of dot products for x and x+1
-//                    xAverage += dot * (1.0d - abs(tempDistance.x));
-////                    xAverage += dot * pow(sin(abs(tempDistance.x)*pi/2.0d), 2);
-//                }
-//                // Take weighted averages of x averages for y and y+1
-//                yAverage += xAverage * (1.0d - abs(tempDistance.y));
-////                yAverage += xAverage * pow(sin(abs(tempDistance.y)*pi/2.0d), 2);
-//            }
-//            // Final result is weighted average of y averages for z and z+1
-//            result += yAverage * (1.0d - abs(tempDistance.z));
-////            result += yAverage * pow(sin(abs(tempDistance.z)*pi/2.0d), 2);
-//        }
+class Grid3DComp
+{
+private:
+    std::vector<std::mt19937_64::result_type> seedBuffer;
+
+public:
+    Grid3DComp(std::size_t s = 512)
+    {
+        seedBuffer.resize(s);
+
+        std::mt19937_64 randGen;
+        for(unsigned int i = 0; i < 512; ++i)
+            randGen();
+        for(std::size_t i = 0; i < seedBuffer.size(); ++i)
+            seedBuffer[i] = randGen();
+    }
+
+    glm::dvec3 index(std::size_t x, std::size_t y, std::size_t z) const
+    {
+        std::size_t buffer[3] = {x, y, z};
+
+        glm::dvec3 result;
+        unsigned int i = 0;
+        do
+        {
+            for(unsigned int j = 0; j < 3; ++j)
+            {
+                unsigned long long seed = seedBuffer[((x + 3) * (y + 7) + z + i*j) % seedBuffer.size()];
+                unsigned long long hash = XXH64(buffer, sizeof(buffer), seed);
+
+                using lim = std::numeric_limits<unsigned long long>;
+                result[j] = (double) hash / (double) lim::max();
+            }
+        } while(i++ < 8 && glm::length(result) > 1.0d);
+
+        return glm::normalize(result);
     }
 };
 
@@ -221,27 +322,42 @@ int main()
     using namespace std;
 
     sf::RenderWindow win(sf::VideoMode(512, 512), "Perlin");
-
-    ofstream logger("log.txt");
+    if(!win.isOpen())
+        return 1;
 
     RandomVectorGenerator vecGen;
 
-    Grid3D<glm::dvec3> test(32, 32, 32);
-    for(unsigned int z = 0; z < 32; ++z)
+    Grid3D<glm::dvec3> test(4, 4, 4);
+    Grid3D<glm::dvec3> colors(4, 4, 4);
+    for(unsigned int z = 0; z < 4; ++z)
     {
-        for(unsigned int y = 0; y < 32; ++y)
+        for(unsigned int y = 0; y < 4; ++y)
         {
-            for(unsigned int x = 0; x < 32; ++x)
+            for(unsigned int x = 0; x < 4; ++x)
             {
                 test.index(x, y, z) = vecGen();
-                logger << x << ' ' << y << ' ' << z << ": " << test.index(x, y, z) << endl;
+                colors.index(x, y, z) = vecGen();
             }
         }
     }
 
-    Perlin3D<Grid3D<glm::dvec3>> perlin(test);
+    Grid3DComp gridTest;
 
-    win.setFramerateLimit(60);
+    Perlin3D<Grid3D<glm::dvec3>> perlin(test);
+    Perlin3D<Grid3D<glm::dvec3>> perlinColor(colors);
+
+    sf::Texture perlinTexture;
+
+    if(!perlinTexture.create(512, 512))
+        return 1;
+    sf::Uint8 *pixels = new sf::Uint8[512 * 512 * 4];
+    double *sampleBuffer = new double[512 * 512];
+
+    sf::Sprite perlinSprite(perlinTexture);
+
+    size_t frameCounter = 0;
+    char filename[128];
+    string filenameStr;
     while(win.isOpen())
     {
         sf::Event e;
@@ -251,36 +367,38 @@ int main()
                 win.close();
         }
 
+        win.clear(sf::Color::Black);
+
+//        perlin.getSamples(glm::dvec3(0.0, 0.0, frameCounter / 300.0d), glm::dvec3(4.0, 4.0, frameCounter / 300.0d), glm::u64vec3(512, 512, 1), sampleBuffer);
+
+        #pragma omp parallel for
         for(unsigned int y = 0; y < 512; ++y)
         {
             for(unsigned int x = 0; x < 512; ++x)
             {
-                glm::dvec3 point(((double) x / 512.d) * 32.0d, ((double) y / 512.d) * 32.0d, 1.1d);
-                double sample = 220.0d * abs(perlin.sample(point) + 0.5);
-
-                largest = sample > largest ? sample : largest;
-                smallest = sample < smallest ? sample : smallest;
+//                pixels[y * 512 * 4 + x * 4] = sampleBuffer[512 * y + x] * 127.0 + 127.0;
+//                pixels[y * 512 * 4 + x * 4 + 1] = sampleBuffer[512 * y + x] * 127.0 + 127.0;
+//                pixels[y * 512 * 4 + x * 4 + 2] = sampleBuffer[512 * y + x] * 127.0 + 127.0;
+//                pixels[y * 512 * 4 + x * 4 + 3] = 255;
+                glm::dvec3 point(((double) x / 512.d) * 4.0d, ((double) y / 512.d) * 4.0d, fmod(frameCounter / 300.0d, 4.0d));
+                double sample = abs(perlin.sample(point) + 0.5);
+                double colorSample = abs(perlinColor.sample(point) + 0.5);
+                glm::dvec3 color = glm::rgbColor(glm::dvec3(colorSample * 360.0d, 1.0d, sample));
+//                glm::dvec3 color(sample, sample, sample);
+                pixels[y * 512 * 4 + x * 4] = glm::clamp(color.r * 255.0, 0.0, 254.9);
+                pixels[y * 512 * 4 + x * 4 + 1] = glm::clamp(color.g * 255.0, 0.0, 254.9);
+                pixels[y * 512 * 4 + x * 4 + 2] = glm::clamp(color.b * 255.0, 0.0, 254.9);
+                pixels[y * 512 * 4 + x * 4 + 3] = 255;
             }
         }
 
-    }
+        perlinTexture.update(pixels);
 
-//    FILE *dump = fopen("C:\\Development\\dump.txt", "w");
-//    char *fileBuffer = new char[67108864];
-//    setvbuf(dump, fileBuffer, _IOFBF, 67108864);
-//
-//    for(unsigned int z = 0; z < 512; ++z)
-//    {
-//        for(unsigned int y = 0; y < 512; ++y)
-//        {
-//            for(unsigned int x = 0; x < 512; ++x)
-//            {
-//                glm::dvec3& vec = test.index(x, y, z);
-//                fprintf(dump, "(%f,%f,%f)\n", vec.x, vec.y, vec.z);
-//            }
-//        }
-//    }
-//
-//    fclose(dump);
-//    delete[] fileBuffer;
+        perlinSprite.setPosition(sf::Vector2f(0, 0));
+        win.draw(perlinSprite);
+
+        win.display();
+
+        ++frameCounter;
+    }
 }
